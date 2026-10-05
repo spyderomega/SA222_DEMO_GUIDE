@@ -1,75 +1,63 @@
-# Настройка обратного прокси-сервера
+# nginx — обратный прокси на ISP
 
-**Печатные страницы:** 115–117.
+Сначала с ISP проверь оба маршрутизатора на порту 8080 (см. [проброс портов](./08-port-forwarding.md)).
 
-<!-- Стр. 115 -->
-
-Проверяем возможность доступа извне по SSH с виртуальной машины ISP:
-
-![Иллюстрация со страницы 115](../assets/page-116-img-01.jpeg)
-
-![Иллюстрация со страницы 115](../assets/page-116-img-02.jpeg)
-
-Где выполнять?
-На виртуальных машинах: HQ-RTR, BR-RTR, HQ-CLI, ISP.
-Дополнительно:
-Статический NAT (проброс портов) — это метод, используемый для сопоставления внутреннего IP-адреса и порта с внешним IP-адресом и портом,
-позволяющим устройствам из внешней сети (например, из сети Интернет) получить доступ к определенным сервисам, запущенным в локальной сети.
-Краткая справка:
-- документация по EcoRouterOS (Wiki) (https://docs.ecorouter.ru/).
-Где изучается?
-2 курс:
-- Операционные системы и среды;
-- Компьютерные сети.
-3, 4 курс:
-- Организация, принципы построения и функционирования компьютерных систем;
-- Организация администрирования компьютерных систем и далее.
-
-### Настройка обратного прокси-сервера
-
-Подробное описание пункта задания
-Настройте веб-сервер nginx как обратный прокси-сервер на ISP:
-- при обращении по доменному имени web.au-team.irpo у клиента должно
-открываться веб-приложение на HQ-SRV;
-
-<!-- Стр. 116 -->
-
-- при обращении по доменному имени docker.au-team.irpo клиента должно открываться веб-приложение testapp.
-Как делать?
-Установите пакет nginx:
-
-```text
+```bash
 apt-get install -y nginx
 ```
 
-Настроить nginx как реверсивный прокси-сервер, приведя файл /etc/ nginx/sites-available.d/default.conf к следующему виду любым удобным текстовым редактором, например vim:
+В `/etc/nginx/sites-available.d/default.conf`:
 
-![Иллюстрация со страницы 116](../assets/page-117-img-01.jpeg)
+```nginx
+server {
+    listen 80;
+    server_name web.au-team.irpo;
+    location / {
+        proxy_pass http://172.16.1.2:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 
-Добавить символическую ссылку на данный файл:
-
-```text
-ln -s /etc/nginx/sites-available.d/default.conf /etc/nginx/sitesenabled.d/
+server {
+    listen 80;
+    server_name docker.au-team.irpo;
+    location / {
+        proxy_pass http://172.16.2.2:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
 
-Запустить и активировать службу nginx:
+Если ссылки еще нет:
 
-```text
+```bash
+ln -s /etc/nginx/sites-available.d/default.conf /etc/nginx/sites-enabled.d/default.conf
+nginx -t
 systemctl enable --now nginx
+systemctl reload nginx
 ```
 
-Поскольку в домене SambaDC нет DNS записей, ссылающихся на необходимые имена, а на HQ-CLI в качестве DNS-сервера задан адрес именно контролле-
+На HQ-CLI добавь в `/etc/hosts` (сохрани остальные записи):
 
-<!-- Стр. 117 -->
+```text
+172.16.1.1 web.au-team.irpo
+172.16.2.1 docker.au-team.irpo
+```
 
-ра домена, то необходимо добавить записи в файл /etc/hosts на виртуальной машине HQ-CLI:
+Это нужно, если DNS Samba не содержит нужных записей. Проверь:
 
-![Иллюстрация со страницы 117](../assets/page-118-img-01.jpeg)
+```bash
+getent hosts web.au-team.irpo docker.au-team.irpo
+curl -I http://web.au-team.irpo
+curl -I http://docker.au-team.irpo
+```
 
-### Как проверить? Проверить возможность доступа до веб-ресурсов из браузера на клиенте:
+Открой оба адреса в браузере: web → сайт HQ-SRV, docker → testapp BR-SRV.
 
-![Иллюстрация со страницы 117](../assets/page-118-img-02.jpeg)
-
-![Иллюстрация со страницы 117](../assets/page-118-img-03.jpeg)
-
-Где выполнять? На виртуальной машине: ISP, HQ-CLI. Дополнительно: Реверсивный прокси Nginx обладает рядом замечательных характеристик и преимуществ, которые делают его популярным выбором для веб-раз-
+> **Важно:** имена должны вести на ISP, где слушает nginx, а upstream — на внешний адрес соответствующего маршрутизатора:8080. Удали противоречащие записи этих имен в hosts. При `502` проверь upstream с ISP; при чужой странице — server_name, разрешение имени и дубли конфигураций. Путь `sites-enabled.d` в исходнике был склеен неверно.

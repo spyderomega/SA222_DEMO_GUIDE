@@ -1,65 +1,66 @@
-# Настройка ansible
+# Ansible — BR-SRV
 
-**Печатные страницы:** 103–104.
+## Установка
 
-<!-- Стр. 103 -->
-
-### Настройка ansible
-
-Подробное описание пункта задания
-Сконфигурируйте ansible на сервере BR-SRV:
-- сформируйте файл инвентаря, в инвентарь должны входить HQ-SRV, HQ-
-CLI, HQ-RTR и BR-RTR;
-- рабочий каталог ansible должен располагаться в /etc/ansible;
-- все указанные машины должны без предупреждений и ошибок отвечать
-pong на команду ping в ansible посланную с BR-SRV.
-Как делать?
-Необходимо установить пакеты ansible и sshpass. Выполнить установку можно следующей командой:
-
-```text
-apt-get update && apt-get install –y ansible sshpass
-```
-
-Привести файл инвентаря Ansible к виду, приведенному на скриншоте ниже, отредактировав конфигурационный файл по пути /etc/ansible/hosts любым удобным текстовым редактором, например vim:
-
-![Иллюстрация со страницы 103](../assets/page-104-img-01.jpeg)
-
-Отредактировать файл /etc/ansible/ansible.cfg, приводя его к следующему виду:
-
-![Иллюстрация со страницы 103](../assets/page-104-img-02.jpeg)
-
-Установить необходимые коллекции для подключения к ОС «EcoRou terOS»:
-
-```text
-ansible-galaxy collection install ansible.netcommon
-```
-
-```text
-ansible-galaxy collection install cisco.ios
-```
-
-<!-- Стр. 104 -->
-
-Установить пакет python3-module-pip, далее поставить библиотеку ansible-pylibssh:
-
-```text
-apt-get install –y python3-module-pip
-```
-
-```text
+```bash
+apt-get update
+apt-get install -y ansible sshpass python3-module-pip
+mkdir -p /etc/ansible
+ansible-galaxy collection install ansible.netcommon cisco.ios
 pip3 install ansible-pylibssh
 ```
 
-На виртуальных машинах с ОС «EcoRouterOS» из режима администрирования (conf t) разрешить подключения к устройству по ssh:
+> **Важно:** если pip запрещает установку в системную среду, используй пакет библиотеки из репозитория или venv с Ansible и библиотекой в одной среде. Не скрывай эту ошибку настройками предупреждений.
 
-```text
-(config)# security none (config)# write memory
+## Инвентарь `/etc/ansible/hosts`
+
+```ini
+[linux]
+HQ-SRV ansible_host=192.168.100.2 ansible_user=sshuser ansible_port=2026
+HQ-CLI ansible_host=192.168.200.2 ansible_user=<ЛОКАЛЬНЫЙ_ПОЛЬЗОВАТЕЛЬ_HQ-CLI> ansible_port=22
+
+[linux:vars]
+ansible_python_interpreter=/usr/bin/python3
+
+[routers]
+HQ-RTR ansible_host=10.10.10.1
+BR-RTR ansible_host=192.168.0.1
+
+[routers:vars]
+ansible_user=net_admin
+ansible_password=P@ssw0rd
+ansible_connection=ansible.netcommon.network_cli
+ansible_network_os=cisco.ios.ios
 ```
 
-Важное замечание: данный способ не рекомендуется использовать в производственных средах, применимо исключительно только для экономии времени при выполнении задания Демонстрационного экзамена (ДЭ). За рамками выполнения задания Демонстрационного экзамена (ДЭ) лучше сделать отдельный security profille для интерфейса управления типа In-Band Management с соответствующими правилами безопасности, а также добавить созданный профиль безопасности в отдельный VRF. Как проверить? Ответы от машин должны быть зеленого цвета и содержать поле pong:
+Для Linux добавь к каждой строке `ansible_password=<ПАРОЛЬ_ЭТОГО_ПОЛЬЗОВАТЕЛЯ>` или заранее настрой SSH-ключ. Для HQ-SRV пароль примера — `P@ssw0rd`; учетную запись и пароль HQ-CLI проверь отдельно. Проверь IP HQ-CLI после DHCP/ввода в домен и доступность SSH/Python на Linux.
+
+`/etc/ansible/ansible.cfg`:
+
+```ini
+[defaults]
+inventory = /etc/ansible/hosts
+host_key_checking = False
+```
+
+На обоих EcoRouter из `configure terminal`:
 
 ```text
+security none
+write memory
+```
+
+> **Учебный стенд:** `security none` и отключенная проверка SSH host key — упрощения исходного практикума. `cisco.ios.ios` используется как совместимый драйвер CLI; работоспособность зависит от версии EcoRouter/коллекций.
+
+## Проверка с BR-SRV
+
+```bash
+cd /etc/ansible
+ansible-inventory --graph
 ansible all -m ping
+ansible routers -m ansible.netcommon.cli_command -a "command=show hostname"
 ```
 
-![Иллюстрация со страницы 104](../assets/page-105-img-01.jpeg)
+По заданию все четыре узла должны ответить `pong` на `ansible all -m ping` без ошибок и предупреждений.
+
+> **Важно:** для Linux `ping` проверяет SSH и Python. На `network_cli` ответ pong сам по себе не доказывает доступ к маршрутизатору; обязательно проверь реальную CLI-команду. При ошибке начни с обычного SSH на нужный порт, затем используй `-vvv`. [Документация Ansible ping](https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/ping_module.html).
