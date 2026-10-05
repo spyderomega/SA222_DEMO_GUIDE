@@ -1,76 +1,53 @@
-# Защита ssh от атак методом перебора пароля
+# Защита SSH — HQ-SRV
 
-**Печатные страницы:** 149–150.
-
-<!-- Стр. 149 -->
-
-### Защита ssh от атак методом перебора пароля
-
-Подробное описание пункта задания
-На HQ-SRV настройте программное обеспечение fail2ban для защиты ssh:
-- укажите порт ssh;
-- при 3 неуспешных авторизациях адрес атакующего попадает в бан;
-- бан производится на 1 минуту.
-Как делать?
-Установить fail2ban и iptables (как блокировщик портов):
-
-```text
-apt-get install –y fail2ban iptables
+```bash
+apt-get install -y fail2ban iptables rsyslog
 ```
 
-Настроить сервис ssh на передачу своих логов в службу rsyslog, открыть в конфигурационном файле /etc/opensshd/sshd_conˋg секции:
+В `/etc/openssh/sshd_config` установи (сохрани Port 2026 и AllowUsers):
 
 ```text
-SyslogFacility AUTHPRIV LogLevel INFO
+SyslogFacility AUTHPRIV
+LogLevel INFO
 ```
 
-Настроить файл /etc/fail2ban/jail.conf, указав в секции [sshd] параметры защиты:
+В rsyslog добавь один раз локальное правило `authpriv.* /var/log/auth.log`; оно не пересылает логи самому себе.
 
-```text
-[sshd] enabled = yes port = 2026 logpath = /var/log/auth.log backend = %(sshd_backend)s maxretry = 3 bantime = 1m
+```bash
+rsyslogd -N1
+systemctl enable --now rsyslog
+systemctl restart rsyslog
+sshd -t
+systemctl restart sshd
 ```
 
-Убедиться, что логи sshd пишутся в /var/log/auth.log. Для настройки auth логов в конфигурационном файле rsyslog должна быть следующая секция:
+Создай `/etc/fail2ban/jail.d/sshd.local`:
 
-```text
-authpriv.* /var/log/auth.log
+```ini
+[sshd]
+enabled = true
+port = 2026
+backend = auto
+logpath = /var/log/auth.log
+banaction = iptables-multiport
+maxretry = 3
+findtime = 10m
+bantime = 1m
 ```
 
-Если логи сервиса sshd ведут в другое место, стоит указать это место (например, /var/log/secure) или оставить параметр logpath в jail.conf по умолчанию: Запустить сервис fail2ban:
-
-```text
-systemctl enable –now fail2ban
-```
-
-<!-- Стр. 150 -->
-
-Удостовериться в том, что порт 2026 блокируется при 3 неуспешных авторизациях для конкретного ip-адреса, к примеру, выполнив 3 неуспешных попытки авторизации с сервера BR-SRV:
-
-```text
+```bash
+fail2ban-client -t
+systemctl enable --now fail2ban
+systemctl restart fail2ban
 fail2ban-client status sshd
 ```
 
-![Иллюстрация со страницы 150](../assets/page-151-img-01.jpeg)
+С тестового клиента сделай **три неверные попытки входа** на 2026; при MaxAuthTries 2 понадобятся несколько SSH-соединений. На HQ-SRV проверь появление ошибок в `/var/log/auth.log` и IP в `fail2ban-client status sshd`. Через минуту IP должен выйти из бана.
 
-Для быстрого вывода из бана выполнить:
+Для снятия бана только тестового адреса:
 
-```text
-fail2ban-client unban all #всех fail2ban-client unban 192.168.0.2 #отдельный ip адрес
+```bash
+fail2ban-client set sshd unbanip 192.168.0.2
 ```
 
-Где выполнять?
-На виртуальных машинах: HQ-SRV.
-Дополнительно:
-Fail2ban позволяет настраивать защиту от bruteforce-атак — механизмы,
-которые автоматически блокируют подозрительные IP-адреса. Это позволяет:
-- анализировать логи сервисов (SSH, FTP, веб-серверы) на предмет неудачных попыток входа;
-- динамически добавлять нарушителей в черный список через iptables/
-ˋrewalld;
-- интегрироваться с любыми сервисами, ведущими журналы аутентификации.
-Краткая справка:
-- https://habr.com/ru/articles/557980/.
-Где изучается?
-2 курс:
-- Операционные системы и среды (основы).
-4 курс:
-- Безопасность компьютерных сетей.
+> **Важно:** тестируй с отдельного клиента, оставив консоль HQ-SRV открытой. Порт и logpath должны совпадать с фактическими. Если используется только journald, выбери `backend = systemd` и убери logpath. Не редактируй пакетный jail.conf — локальные настройки сохранятся после обновления.

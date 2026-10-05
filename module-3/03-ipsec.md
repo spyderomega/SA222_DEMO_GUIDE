@@ -1,47 +1,70 @@
-# Настройка ipsec на EcoRouter
+# GRE over IPsec — HQ-RTR и BR-RTR
 
-**Печатные страницы:** 135–136.
+Сначала проверь GRE `tunnel.0` и соседство OSPF. Если исходный туннель IP in IP, сначала переведи **обе** стороны в GRE, сохранив адреса туннеля. Команда `ip tunnel`: HQ — `172.16.1.2 172.16.2.2 mode gre`, BR — наоборот.
 
-<!-- Стр. 135 -->
+Из `configure terminal` выполни общий блок на каждом маршрутизаторе, заменив параметры:
 
-Где изучается?
-4 курс:
-- Безопасность компьютерных сетей;
-- Программное обеспечение компьютерных сетей.
-
-### Настройка ipsec на EcoRouter
-
-Подробное описание пункта задания
-Перенастройте ip-туннель с базового до уровня туннеля, обеспечивающего
-шифрование трафика:
-- настройте защищенный туннель между HQ-RTR и BR-RTR;
-- внесите необходимые изменения в конфигурацию динамической маршрутизации, протокол динамической маршрутизации должен возобновить
-работу после перенастройки туннеля;
-- выбранное программное обеспечение, обоснование его выбора и его основные параметры, изменения в конфигурации динамической маршрутизации
-отметьте в отчете.
-Как делать?
-Описать профиль, криптокарту и криптофильтр, затем применить криптокарту к криптофильтру, затем применить криптофильтр к туннелю. Рекомендуется использовать максимальный размер пакета равный 1360 для работы
-сети поверх ipsec.
-Конфигурацию HQ-RTR и BR-RTR дополнить в соответствии с таблицей,
-в таблице указаны параметры, что нужно дополнить, без учета предыдущей
-настройки:
+| Узел | LOCAL_IP | PEER_IP |
+| --- | --- | --- |
+| HQ-RTR | 172.16.1.2 | 172.16.2.2 |
+| BR-RTR | 172.16.2.2 | 172.16.1.2 |
 
 ```text
-HQ-RTR
+crypto-ipsec ike enable
+crypto-ipsec profile IPSEC ike-v2
+ mode tunnel
+ nat-traversal
+ ike-phase1
+  proposal aes256-sha256-modp2048
+  auth pre-shared-key P@ssw0rd
+ exit
+ ike-phase2
+  protocol esp
+  proposal aes256-sha256
+  local-ts <LOCAL_IP>
+  remote-ts <PEER_IP>
+ exit
+exit
+crypto-map CMAP 10
+ match peer <PEER_IP>
+ set crypto-ipsec profile IPSEC
+exit
+filter-map ipv4 FMAP 10
+ match gre host <LOCAL_IP> host <PEER_IP>
+ set crypto-map CMAP peer <PEER_IP>
+exit
+filter-map ipv4 FMAP 20
+ match udp host <PEER_IP> eq 4500 host <LOCAL_IP> eq 4500
+ set crypto-map CMAP peer <PEER_IP>
+exit
+filter-map ipv4 FMAP 30
+ match any any any
+ set accept
+exit
+interface isp
+ set filter-map in FMAP 10
+exit
+interface tunnel.0
+ ip mtu 1360
+ set filter-map in FMAP 10
+exit
+write memory
 ```
+
+> **Важно:** на BR свои local-ts, peer и направления match — в исходнике скопированы значения HQ. Имя `isp` сверь с WAN-интерфейсом. Оба конца используют одинаковые алгоритмы/PSK и MTU 1360. Вложения `ike-phase1/2` и `exit` сверь с контекстом CLI своей версии; каждая команда начинается в указанном режиме.
+
+Проверка:
 
 ```text
-crypto-ipsec ike enable ! crypto-ipsec profile IPSEC ike-v2 mode tunnel nat-traversal ike-phase1 proposal aes256-sha256-modp2048 auth pre-shared-key P@ssw0rd ike-phase2 protocol esp proposal aes256-sha256 local-ts 172.16.1.2 remote-ts 172.16.2.2 ! crypto-map CMAP 10 match peer 172.16.2.2 set crypto-ipsec profile IPSEC !
+show crypto-ipsec ike connections
+show crypto-ipsec ike security-associations
+show ip ospf neighbor
+show ip route ospf
+show counters interface isp filter-map in
 ```
 
-<!-- Стр. 136 -->
+IKE — `ESTABLISHED`, дочерняя SA — `INSTALLED`, OSPF — FULL. Ping до второго адреса туннеля и сервера другого офиса должен работать. Убедись по SA/перехвату WAN, что трафик зашифрован, а не только проходит по GRE.
 
-```text
-filter-map ipv4 FMAP 10 match gre host 172.16.1.2 host 172.16.2.2 set crypto-map CMAP peer 172.16.2.2 ! filter-map ipv4 FMAP 20 match udp host 172.16.2.2 eq 4500 host 172.16.1.2 eq 4500 set crypto-map CMAP peer 172.16.2.2 ! filter-map ipv4 FMAP 30 match any any any set accept ! interface tunnel.0 ip mtu 1360 set filter-map in FMAP 10
-```
+При сохранении адресов и имени tunnel.0 объявления OSPF остаются прежними; при их изменении исправь `network`, `no passive-interface` и аутентификацию. Не включай соседство на WAN.
 
-Выполнить те же действия, но с другой стороны, указав нужные параметры на BR-RTR:
-
-```text
-BR-RTR crypto-ipsec ike enable ! crypto-ipsec profile IPSEC ike-v2 mode tunnel nat-traversal ike-phase1 proposal aes256-sha256-modp2048 auth pre-shared-key P@ssw0rd ike-phase2 protocol esp proposal aes256-sha256 local-ts 172.16.1.2 remote-ts 172.16.2.2 ! crypto-map CMAP 10 match peer 172.16.2.2 set crypto-ipsec profile IPSEC ! filter-map ipv4 FMAP 10 match gre host 172.16.1.2 host 172.16.2.2 set crypto-map CMAP peer 172.16.2.2 ! filter-map ipv4 FMAP 20 match udp host 172.16.2.2 eq 4500 host 172.16.1.2 eq 4500 set crypto-map CMAP peer 172.16.2.2 ! filter-map ipv4 FMAP 30 match any any any
-```
+В отчет: GRE over IPsec, причина выбора, IKEv2/ESP, алгоритмы, MTU, адреса и изменения OSPF. [Пример EcoRouter](https://docs.ecorouter.ru/Руководство/24-IPsec/04-Настройка-GRE-over-IPsec).

@@ -1,165 +1,88 @@
-# Настройка сертификатов ГОСТ
+# ГОСТ-сертификаты и HTTPS
 
-**Печатные страницы:** 130–134.
+## 1. ЦС и сертификаты — HQ-SRV
 
-<!-- Стр. 130 -->
+```bash
+apt-get install -y openssl-gost-engine
+control openssl-gost enabled
+openssl ciphers | tr ":" "\n" | grep GOST
+mkdir -p /root/ca
+cd /root/ca
+umask 077
+openssl genpkey -algorithm gost2012_256 -pkeyopt paramset:TCB -out ca.key
+openssl req -new -x509 -md_gost12_256 -days 30 -key ca.key -out ca.crt -subj "/CN=AU-TEAM CA" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+```
 
-Краткая справка:
-- https://docs.altlinux.org/ru-RU/domain/10.4/html/alt-domain-p10/;
-- https://docs.altlinux.org/ru-RU/domain/10.4/html/alt-domain-p10/ch38s02.
-html.
-Где изучается?
-3 курс:
-- Программное обеспечение компьютерных сетей;
-- Организация администрирования компьютерных систем и далее.
+Для каждого имени создай ключ, запрос и сертификат на 30 дней с SAN:
 
-### Настройка сертификатов ГОСТ
+```bash
+for name in web.au-team.irpo docker.au-team.irpo; do
+    openssl genpkey -algorithm gost2012_256 -pkeyopt paramset:A -out "$name.key"
+    openssl req -new -md_gost12_256 -key "$name.key" -out "$name.csr" -subj "/CN=$name"
+    printf 'subjectAltName=DNS:%s\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=serverAuth\n' "$name" > "$name.ext"
+    openssl x509 -req -md_gost12_256 -in "$name.csr" -CA ca.crt -CAkey ca.key -CAcreateserial -out "$name.crt" -days 30 -extfile "$name.ext"
+    openssl verify -CAfile ca.crt "$name.crt"
+    openssl x509 -in "$name.crt" -noout -dates -ext subjectAltName
+done
+```
 
-Подробное описание пункта задания
-Выполните настройку центра сертификации на базе HQ-SRV:
-- необходимо использовать отечественные алгоритмы шифрования;
-- сертификаты выдаются на 30 дней;
-- обеспечьте доверие сертификату для HQ-CLI;
-- выдайте сертификаты веб-серверам;
-- перенастройте ранее настроенный реверсивный прокси nginx на протокол https;
-- при обращении к веб-серверам https://web.au-team.irpo и https://docker.
-au-team.irpo у браузера клиента не должно возникать предупреждений.
-Как делать?
-На сервере HQ-SRV включить поддержку ГОСТ в ОС «Альт»:
+> **Важно:** не пересоздавай работающий ЦС при повторном запуске. SAN должен содержать точное имя сайта, время на всех узлах должно совпадать. Закрытый **ca.key остается на HQ-SRV**; на ISP передаются только ключи и сертификаты сайтов.
 
-```text
+```bash
+scp web.au-team.irpo.key web.au-team.irpo.crt docker.au-team.irpo.key docker.au-team.irpo.crt root@172.16.1.1:/etc/nginx/
+```
+
+Если root по SSH запрещен, скопируй через доступную учетную запись во временный каталог ISP, затем перенеси от root.
+
+## 2. HTTPS — ISP
+
+Установи `openssl-gost-engine`, выполни `control openssl-gost enabled`, проверь доступность нужного шифра через `openssl ciphers`. В существующих server-блоках nginx для **обоих** сайтов замени `listen 80` на `listen 443 ssl` и добавь:
+
+```nginx
+ssl_certificate /etc/nginx/web.au-team.irpo.crt;
+ssl_certificate_key /etc/nginx/web.au-team.irpo.key;
+ssl_ciphers GOST2012-KUZNYECHIK-KUZNYECHIKOMAC;
+ssl_protocols TLSv1.2;
+ssl_prefer_server_ciphers on;
+```
+
+В блоке docker пути — `docker.au-team.irpo.crt` и `.key`. Сохрани `server_name`, `proxy_pass`, proxy-заголовки и аутентификацию WEB для web. Для перенаправления HTTP добавь отдельный блок:
+
+```nginx
+server {
+    listen 80;
+    server_name web.au-team.irpo docker.au-team.irpo;
+    return 301 https://$host$request_uri;
+}
+```
+
+```bash
+chmod 600 /etc/nginx/web.au-team.irpo.key /etc/nginx/docker.au-team.irpo.key
+nginx -t
+systemctl restart nginx
+```
+
+> **Если `no cipher match` или ключ не читается:** проверь ГОСТ-поддержку OpenSSL и сборки nginx, доступные cipher suites и права. Не заменяй ГОСТ обычным шифром ради успешного запуска. [Поддержка ГОСТ в Альт](https://www.altlinux.org/ГОСТ_в_OpenSSL).
+
+## 3. Доверие — HQ-CLI
+
+Передай **ca.crt** на HQ-CLI, затем от root:
+
+```bash
+cp /tmp/ca.crt /etc/pki/ca-trust/source/anchors/au-team-ca.crt
+update-ca-trust
+apt-get install -y openssl-gost-engine
 control openssl-gost enabled
 ```
 
-С помощью утилиты openssl настроить центр сертификации:
+Распакуй дистрибутив КриптоПро CSP 5 с GUI и запусти из каталога распаковки `bash linux-amd64/install_gui.sh`. Выбери копирование корневых сертификатов. В «Инструментах работы с криптографией → Сертификаты» проверь доверие ЦС; если его нет, импортируй ca.crt в доверенные корневые сертификаты пользователя браузера.
 
-```text
-openssl genpkey -algorithm gost2012_256 -pkeyopt paramset:TCB -out ca.key
+В Яндекс Браузере разреши использование ГОСТ и открой оба **https**-адреса. Предупреждений о недоверенном сертификате/имени быть не должно; web сохраняет вход `WEB / P@ssw0rd`.
+
+Проверка на HQ-CLI:
+
+```bash
+openssl s_client -connect web.au-team.irpo:443 -servername web.au-team.irpo -CAfile /etc/pki/ca-trust/source/anchors/au-team-ca.crt -verify_hostname web.au-team.irpo -verify_return_error -tls1_2
 ```
 
-Выдать сертификат ЦС на 90 дней:
-
-```text
-openssl req -new -x509 -md_gost12_256 -days 90 -key ca.key -out ca.crt
-```
-
-Затем создать приватный ключ для сервера web:
-
-```text
-openssl genpkey -algorithm gost2012_256 -pkeyopt paramset:A -out web.au-team.irpo.key
-```
-
-Создать запрос для ЦС:
-
-```text
-openssl req -new -md_gost12_256 -key web.au-team.irpo.key -out web. au-team.irpo.csr
-```
-
-<!-- Стр. 131 -->
-
-Выдать сертификат на 30 дней:
-
-```text
-openssl x509 -req -in web.au-team.irpo.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out web.au-team.irpo.crt -days 30
-```
-
-Аналогично для docker:
-
-```text
-openssl genpkey -algorithm gost2012_256 -pkeyopt paramset:A -out docker.au-team.irpo.key
-```
-
-Создать запрос для ЦС:
-
-```text
-openssl req –new -md_gost12_256 -key docker.au-team.irpo.key -out docker.au-team.irpo.csr
-```
-
-Выдать сертификат на 30 дней:
-
-```text
-openssl x509 -req -in docker.au-team.irpo.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out docker.au-team.irpo.crt -days 30
-```
-
-Удобным способом скопировать приватные и публичные ключи с сервера HQ-SRV на ISP в директорию /etc/nginx.
-
-```text
-scp *.key *.crt root@172.16.1.1:/etc/nginx/
-```
-
-Отредактировать конфигурационный файл nginx на ISP, внутри секции http, скопировать секции и server для обоих серверов, дописать к ранее описанной конфигурации параметры работы по протоколу https:
-
-```text
-server { listen 443 ssl; server_name web.au-team.irpo; ssl_certificate /etc/nginx/web.au-team.irpo.crt; ssl_certificate_key /etc/nginx/web.au-team.irpo.key; ssl_ciphers GOST2012-KUZNYECHIK-KUZNYECHIKOMAC; ssl_protocols TLSv1.2; ssl_prefer_server_ciphers on; location / { proxy_pass http://172.16.1.2:8080; auth_basic “Authorized access”; auth_basic_user_file /etc/nginx/.htpasswd; } }
-```
-
-<!-- Стр. 132 -->
-
-```text
-server { listen 443 ssl; server_name docker.au-team.irpo; ssl_certificate /etc/nginx/docker.au-team.irpo.crt; ssl_certificate_key /etc/nginx/docker.au-team.irpo.key; ssl_ciphers GOST2012-KUZNYECHIK-KUZNYECHIKOMAC; ssl_protocols TLSv1.2; ssl_prefer_server_ciphers on; location / { proxy_pass http://172.16.2.2:8080; } }
-```
-
-Проверить конфигурацию nginx на ISP:
-
-```text
-nginx -t
-```
-
-Если конфигурация в порядке, перечитать конфиг или перезапустить сервис на ISP:
-
-```text
-systemctl reload nginx
-```
-
-Передать удобным способом публичный ключ ЦС с сервера HQ-SRV на клиента HQ-CLI:
-
-```text
-scp ca.crt root@hq-cli:/etc/pki/ca-trust/source/anchors/
-```
-
-На клиенте HQ-CLI выполнить команду обновления корневых сертификатов:
-
-```text
-update-ca-trust
-```
-
-На клиенте HQ-CLI скачать, распаковать и установить cryptopro csp 5, обязательно установить версию с графикой, поставить галочку напротив пункта «Копировать корневые сертификаты»:
-
-```text
-bash linux-amd64/install_gui.sh
-```
-
-Проверить и убедиться, что появился сертификат в списке доверенных на клиенте, открыв утилиту «Инструменты работы с криптографией», щелкнув на кнопке «Сертификаты»:
-
-<!-- Стр. 133 -->
-
-![Иллюстрация со страницы 133](../assets/page-134-img-01.jpeg)
-
-В случае, если сертификат отсутствует, добавить его вручную, скопировав его в папку, доступную для чтения пользователем в графике, например /home/user. Открыть обозреватель Яндекс на странице https://web.au-team.irpo и https://docker.au-team.irpo, согласиться с тем, что сервер использует алгоритмы ГОСТ:
-
-![Иллюстрация со страницы 133](../assets/page-134-img-02.jpeg)
-
-![Иллюстрация со страницы 133](../assets/page-134-img-03.jpeg)
-
-<!-- Стр. 134 -->
-
-Для проверки алгоритма и соединения выполните команду на клиенте:
-
-```text
-openssl s_client -connect web.au-team.irpo:443
-```
-
-В случае корректной настройки можно увидеть используемый алгоритм (Кузнечик) и информацию о том, что данные шифруются по ГОСТ:
-
-![Иллюстрация со страницы 134](../assets/page-135-img-01.jpeg)
-
-Где выполнять?
-На виртуальной машине: HQ-SRV.
-Дополнительно:
-OpenSSL позволяет настраивать SSL/TLS-сертификаты — механизмы, которые обеспечивают криптографическую защиту соединения и аутентификацию сторон. Это позволяет:
-- шифровать передаваемые данные, предотвращая перехват трафика;
-- идентифицировать веб-сервер, подтверждая его подлинность для пользователей;
-- интегрироваться с центрами сертификации (как коммерческими, так
-и собственными).
-Краткая справка:
-- https://www.altlinux.org/ГОСТ_в_OpenSSL.
+Повтори для docker. Ожидаются ГОСТ-шифр и успешная проверка сертификата. TLS завершается на ISP; upstream остается HTTP через проброшенные порты.

@@ -1,141 +1,94 @@
-# Логирование, ротация логов
+# Логи warning и выше — HQ-SRV
 
-**Печатные страницы:** 141–144.
+Клиенты: HQ-RTR, BR-RTR, BR-SRV. HQ-SRV не пересылает логи самому себе.
 
-<!-- Стр. 141 -->
+## HQ-SRV: прием UDP 514
 
-Удобным способом подключить принтер к клиенту по адресу: ipp://hq-srv:631/printers/Cups-PDF
-
-![Иллюстрация со страницы 141](../assets/page-142-img-01.jpeg)
-
-Где выполнять?
-На виртуальных машинах: HQ-SRV, клиент на HQ-CLI.
-Дополнительно:
-CUPS позволяет настраивать сетевую печать — механизмы, которые централизуют управление принтерами в сети. Это позволяет:
-- предоставлять общий доступ к принтерам для множества пользователей;
-- автоматически определять и настраивать драйверы печатающих уст
-ройств;
-- интегрироваться с различными операционными системами и сетевыми
-протоколами печати (IPP).
-Краткая справка:
-- https://docs.altlinux.org/ru-RU/archive/2.4/html-single/master/alt-docsmaster/ch06s09.html.
-Где изучается?
-2 курс:
-- Архитектура аппаратных средств;
-- Операционные системы и среды.
-3 курс:
-- Администрирование сетевых операционных систем;
-- Программное обеспечение компьютерных сетей.
-
-### Логирование, ротация логов
-
-Подробное описание пункта задания
-Реализуйте логирование при помощи rsyslog на устройствах HQ-RTR, BR-
-RTR, BR-SRV:
-- сервер сбора логов расположен на HQ-SRV, убедитесь, что сервер не является клиентом самому себе;
-
-<!-- Стр. 142 -->
-
-- приоритет сообщений должен быть не ниже warning;
-- все журналы должны находиться в директории /opt. Для каждого устройства должна выделяться своя поддиректория, которая совпадает с именем машины;
-- реализуйте ротацию собранных логов на сервере HQ-SRV:
-
-- ротируются все логи, находящиеся в директории и поддиректориях /opt;
-
-- ротация производится один раз в неделю:
-
-- логи необходимо сжимать;
-
-- минимальный размер логов для ротации — 10 МБ.
-Как делать?
-Сервер логирования:
-На сервера HR-SRV настроить сервер rsyslog, в случае его отсутствия
-(к примеру, на AltLinux StarterKit) выполнить установку и последующую настройку:
-
-```text
-apt-get install -y rsyslog
+```bash
+apt-get install -y rsyslog logrotate
+mkdir -p /opt/hq-rtr /opt/br-rtr /opt/br-srv
 ```
 
-Можно привести конфигурационный файл /etc/rsyslog.conf к следующему виду, или создать в директории /etc/rsyslog.conf.d/ свой файл, ввести код:
+Добавь в `/etc/rsyslog.conf` блок (или в подключаемый им каталог конфигураций). Модуль imudp загружай один раз:
 
-```text
-module(load=”imudp”) $ModLoad imuxsock authpriv.* /var/log/auth.log
+```rsyslog
+module(load="imudp")
+input(type="imudp" port="514")
+if ($fromhost-ip == "192.168.100.1" and $syslogseverity <= 4) then {
+    action(type="omfile" file="/opt/hq-rtr/router.log")
+    stop
+}
+if ($fromhost-ip == "10.10.10.2" and $syslogseverity <= 4) then {
+    action(type="omfile" file="/opt/br-rtr/router.log")
+    stop
+}
+if ($fromhost-ip == "192.168.0.2" and $syslogseverity <= 4) then {
+    action(type="omfile" file="/opt/br-srv/server.log")
+    stop
+}
 ```
 
-```text
-input(type=”imudp” port=”514”) if $fromhost-ip contains '192.168.100.1' then { *.warn /opt/hq-rtr/router.log } if $fromhost-ip contains '10.10.10.2' then { *.warn /opt/br-rtr/router.log } if $fromhost-ip contains '192.168.0.2' then { *.warn /opt/br-srv/server.log }
+```bash
+rsyslogd -N1
+systemctl enable --now rsyslog
+systemctl restart rsyslog
 ```
 
-Затем запустить сервер rsyslog:
+> **Важно:** IP в условиях — фактический источник syslog, сверь его по `tcpdump -ni any udp port 514`. Маршрутизатор может выбрать другой адрес. Используй точное равенство, не `contains`; оставь каталоги `hq-rtr`, `br-rtr`, `br-srv`. Если rsyslog работает не от root, дай его пользователю права записи в эти каталоги.
 
-```text
-systemctl enable –now rsyslog
-```
+## HQ-RTR и BR-RTR
 
-На маршрутизаторах HQ-RTR и BR-RTR указать сервер rsyslog:
+Из `configure terminal`:
 
 ```text
 rsyslog host 192.168.100.2
+write memory
 ```
 
-<!-- Стр. 143 -->
+Уровень warning и выше отбирается сервером.
 
-На BR-SRV установить и запустить rsyslog, прописать в конфигурационном файле (rsyslog.conf или созданном .conf в директории /etc/rsyslog.conf.d):
+## BR-SRV
 
-```text
-$ModLoad imuxsock $ModLoad imjournal *.warn @@192.168.100.2:514
+Установи rsyslog. В конфигурацию добавь, сохранив существующие локальные модули/правила:
+
+```rsyslog
+*.warning @192.168.100.2:514
 ```
 
-При корректной настройке логи типа *.warn будут присылаться с устройств в директорию /opt, в поддиректории, описанные в конфигурации:
-
-![Иллюстрация со страницы 143](../assets/page-144-img-01.jpeg)
-
-Утилитой logger на BR-SRV можно быстро проверить, высылаются ли логи на сервер:
-
-```text
-logger warn atencion
+```bash
+rsyslogd -N1
+systemctl enable --now rsyslog
+systemctl restart rsyslog
+logger -p user.warning "check-br-srv"
 ```
 
-Ротация логов: Проверить, установлен ли сервис logrotate. Если не установлен (в случае использования AltLinux StarterKit), выполнить команду:
+Одна `@` — UDP, согласованный с приемником; `@@` означает TCP. На HQ-SRV проверь `tail /opt/br-srv/server.log`. Аналогично проверь поступление warning-событий от обоих маршрутизаторов.
+
+## Ротация на HQ-SRV
+
+В `/etc/logrotate.d/remote-logs`:
 
 ```text
-apt-get install –y logrotate
+/opt/*.log /opt/*/*.log {
+    weekly
+    minsize 10M
+    compress
+    rotate 4
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+        /bin/systemctl kill -s HUP rsyslog.service
+    endscript
+}
 ```
 
-Настроить ротацию в конфигурационном файле /etc/logrotate.conf:
-
-```text
-/opt/br-rtr/*.log /opt/hq-rtr/*.log /opt/br-srv/*.log { weekly compress minsize 10M }
-```
-
-<!-- Стр. 144 -->
-
-Запустить службу и установить автозапуск сервиса:
-
-```text
-systemctl enable –now logrotate
-```
-
-Проверить конфигурацию командой:
-
-```text
+```bash
 logrotate -d /etc/logrotate.conf
+systemctl list-timers --all | grep logrotate
+ls /etc/cron.daily/
 ```
 
-В конце вывода команды будет описание ротирования указанных директорий:
+Должен работать штатный ежедневный запуск logrotate через timer **или** cron; если установлен `logrotate.timer`, включи `systemctl enable --now logrotate.timer`. Не включай несуществующую службу logrotate.
 
-![Иллюстрация со страницы 144](../assets/page-145-img-01.jpeg)
-
-Где выполнять?
-На виртуальных машинах: HQ-SRV — сервер, BR-SRV — клиент.
-На маршрутизаторах: HQ-RTR, BR-RTR — клиенты.
-Дополнительно:
-Системы логирования (rsyslog, journald) позволяют настраивать сбор
-и анализ системных событий — механизмы, которые централизуют учет работы приложений и ОС. Это позволяет:
-- отслеживать ошибки и критические события в реальном времени;
-- хранить историю изменений и действий пользователей для аудита;
-- интегрироваться с внешними SIEM-системами для анализа безопасности.
-Краткая справка:
-- https://docs.altlinux.org/ru-RU/domain/10.4/html/alt-domain-p10/
-ch54s09.html;
-- https://www.altlinux.org/Journald.
+> **Важно:** weekly + minsize означает ротацию раз в неделю при размере не меньше 10 МБ. Маски покрывают /opt и созданные подкаталоги; при более глубоком размещении логов добавь соответствующие пути. HUP заставляет rsyslog открыть новый файл после ротации.
